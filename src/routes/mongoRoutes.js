@@ -118,7 +118,7 @@ router.post('/seed-templates', async (req, res) => {
 
 /**
  * @route POST /api/mongo/seed
- * @desc Seed MongoDB with sample visit data
+ * @desc Seed MongoDB with sample visit data, visit types, and visit templates
  * @access Private
  */
 router.post('/seed', async (req, res) => {
@@ -130,7 +130,19 @@ router.post('/seed', async (req, res) => {
       await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/nursing_home_visits');
     }
     
-    // Clear existing data
+    // Seed visit types first
+    logger.info('Seeding visit types...');
+    const { seedVisitTypes } = require('../db/seedVisitTypes');
+    const visitTypesResult = await seedVisitTypes();
+    logger.info(`Visit types seeded: ${visitTypesResult.total} types created`);
+    
+    // Seed visit templates
+    logger.info('Seeding visit templates...');
+    const { seedVisitTemplates } = require('../db/seedVisitTemplates');
+    const templatesResult = await seedVisitTemplates();
+    logger.info(`Visit templates seeded: ${templatesResult.total} templates created`);
+    
+    // Clear existing visit data
     await Visit.deleteMany({});
     
     // Get patient IDs from MySQL first (these should exist from SQL seeding)
@@ -276,11 +288,13 @@ router.post('/seed', async (req, res) => {
     
     res.status(200).json({
       success: true,
-      message: `MongoDB seeding completed successfully. ${totalCount} visits created.`,
+      message: `MongoDB seeding completed successfully. ${visitTypesResult.total} visit types, ${templatesResult.total} visit templates, and ${totalCount} visits created.`,
       data: {
+        visitTypes: visitTypesResult.total,
+        visitTemplates: templatesResult.total,
         visitsCreated: insertedVisits.length,
         totalVisits: totalCount,
-        sampleVisitIds: insertedVisits.map(v => v._id)
+        sampleVisitIds: insertedVisits.map(v => v._id).slice(0, 5) // Only show first 5 IDs
       },
       timestamp: new Date().toISOString()
     });
