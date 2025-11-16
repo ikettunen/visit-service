@@ -1,3 +1,4 @@
+require('dotenv').config();
 const mysql = require('mysql2/promise');
 const pino = require('pino');
 
@@ -9,20 +10,45 @@ const dbConfig = {
   port: process.env.DB_PORT || 3306,
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || 'password',
-  database: process.env.DB_NAME || 'nursing_home',
+  database: process.env.DB_NAME || 'nursing_home_db',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
   acquireTimeout: 60000,
-  // Remove timeout as it's not a valid mysql2 option
+  multipleStatements: true
 };
 
 // Create connection pool
 const pool = mysql.createPool(dbConfig);
 
+// Create database if it doesn't exist
+async function createDatabase() {
+  try {
+    const mysql = require('mysql2/promise');
+    const connection = await mysql.createConnection({
+      host: dbConfig.host,
+      port: dbConfig.port,
+      user: dbConfig.user,
+      password: dbConfig.password
+    });
+
+    await connection.query(`CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+    await connection.end();
+    
+    logger.info(`Database '${dbConfig.database}' created or already exists`);
+    return true;
+  } catch (error) {
+    logger.error('Failed to create database:', error);
+    return false;
+  }
+}
+
 // Test connection function
 async function testConnection() {
   try {
+    // First try to create database if it doesn't exist
+    await createDatabase();
+    
     const connection = await pool.getConnection();
     logger.info('MySQL connection test successful');
     connection.release();
@@ -72,5 +98,6 @@ module.exports = {
   testConnection,
   executeQuery,
   executeTransaction,
+  createDatabase,
   dbConfig
 };

@@ -5,12 +5,27 @@ class VisitTask {
     this.id = data.id;
     this.visit_id = data.visit_id;
     this.task_id = data.task_id;
-    this.task_title = data.task_title;
+    // Map task_type to task_title if task_title doesn't exist
+    this.task_title = data.task_title || data.task_type;
+    this.task_type = data.task_type;
+    this.description = data.description;
     this.completed = data.completed || false;
     this.completed_at = data.completed_at;
     this.notes = data.notes;
     this.created_at = data.created_at;
     this.updated_at = data.updated_at;
+  }
+
+  // Convert to JSON with camelCase for frontend
+  toJSON() {
+    return {
+      id: this.id,
+      taskId: this.task_id || String(this.id),
+      taskTitle: this.task_title,
+      completed: Boolean(this.completed),
+      completedAt: this.completed_at,
+      notes: this.notes || this.description
+    };
   }
 
   // Save task to database
@@ -39,7 +54,7 @@ class VisitTask {
   static async findByVisitId(visitId) {
     const query = 'SELECT * FROM visit_tasks WHERE visit_id = ? ORDER BY created_at ASC';
     const rows = await executeQuery(query, [visitId]);
-    return rows.map(row => new VisitTask(row));
+    return rows.map(row => new VisitTask(row).toJSON());
   }
 
   // Find task by ID

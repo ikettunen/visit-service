@@ -11,11 +11,47 @@ const VitalSignsSchema = new mongoose.Schema({
 });
 
 const TaskCompletionSchema = new mongoose.Schema({
-  taskId: { type: String, required: true },
+  taskId: { type: String, required: true }, // Can be TaskTemplate._id or PatientTask._id
+  taskType: { 
+    type: String, 
+    enum: ['template', 'patient_specific'], 
+    required: true 
+  },
   taskTitle: { type: String, required: true },
+  taskCategory: { type: String },
+  priority: { 
+    type: String, 
+    enum: ['low', 'medium', 'high', 'critical'],
+    default: 'medium'
+  },
   completed: { type: Boolean, required: true, default: false },
   completedAt: { type: Date },
+  completedBy: {
+    userId: { type: String },
+    userName: { type: String }
+  },
+  startedAt: { type: Date },
+  duration: { type: Number }, // actual time taken in minutes
   notes: { type: String },
+  // For tasks that require verification or supervision
+  verifiedBy: {
+    userId: { type: String },
+    userName: { type: String },
+    verifiedAt: { type: Date }
+  },
+  // Issues or complications encountered
+  issues: [{
+    description: { type: String },
+    severity: { 
+      type: String, 
+      enum: ['minor', 'moderate', 'major', 'critical'] 
+    },
+    reportedAt: { type: Date, default: Date.now },
+    reportedBy: {
+      userId: { type: String },
+      userName: { type: String }
+    }
+  }]
 });
 
 const VisitSchema = new mongoose.Schema(
@@ -35,6 +71,18 @@ const VisitSchema = new mongoose.Schema(
       default: 'planned',
     },
     location: { type: String },
+    
+    // Visit classification
+    visitType: { type: String }, // Reference to VisitType name
+    visitTemplateId: { type: mongoose.Schema.Types.ObjectId, ref: 'VisitTemplate' },
+    isRegulated: { 
+      type: Boolean, 
+      required: true, 
+      default: false,
+      index: true 
+    }, // If true, must also be stored in MySQL as FHIR Encounter
+    requiresLicense: { type: Boolean, default: false }, // Requires licensed healthcare worker
+    mysqlVisitId: { type: String, index: true }, // Reference to MySQL visits.id if isRegulated=true
     
     // Visit details
     taskCompletions: [TaskCompletionSchema],
@@ -65,6 +113,9 @@ VisitSchema.index({ nurseId: 1, scheduledTime: -1 });
 VisitSchema.index({ status: 1 });
 VisitSchema.index({ scheduledTime: -1 });
 VisitSchema.index({ 'taskCompletions.taskId': 1 });
+VisitSchema.index({ isRegulated: 1 });
+VisitSchema.index({ mysqlVisitId: 1 });
+VisitSchema.index({ visitType: 1 });
 
 // Virtual for completion percentage
 VisitSchema.virtual('completionPercentage').get(function() {
@@ -80,4 +131,4 @@ VisitSchema.methods.isFullyCompleted = function() {
   return this.taskCompletions.every(task => task.completed);
 };
 
-module.exports = mongoose.model('Visit', VisitSchema);
+module.exports = mongoose.model('Visit', VisitSchema, 'visit_data');

@@ -1,6 +1,7 @@
 const Encounter = require('../models/Encounter');
 const VisitTask = require('../models/VisitTask');
 const Visit = require('../models/Visit'); // MongoDB model for flexible data
+const { executeQuery } = require('../config/database');
 const pino = require('pino');
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
@@ -10,38 +11,33 @@ async function getVisits(req, res) {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
-    const offset = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
-    const filters = {};
-    if (req.query.status) filters.status = req.query.status;
-    if (req.query.patient_id) filters.patient_id = req.query.patient_id;
-    if (req.query.nurse_id) filters.nurse_id = req.query.nurse_id;
-    if (req.query.date_from) filters.date_from = req.query.date_from;
-    if (req.query.date_to) filters.date_to = req.query.date_to;
+    // Build MongoDB query filters
+    const query = {};
+    if (req.query.status) query.status = req.query.status;
+    if (req.query.patient_id) query.patientId = req.query.patient_id;
+    if (req.query.nurse_id) query.nurseId = req.query.nurse_id;
+    if (req.query.date_from || req.query.date_to) {
+      query.scheduledTime = {};
+      if (req.query.date_from) query.scheduledTime.$gte = new Date(req.query.date_from);
+      if (req.query.date_to) query.scheduledTime.$lte = new Date(req.query.date_to);
+    }
 
-    const [encounters, total] = await Promise.all([
-      Encounter.findAll(limit, offset, filters),
-      Encounter.count(filters)
+    // Fetch from MongoDB
+    const [visits, total] = await Promise.all([
+      Visit.find(query)
+        .sort({ scheduledTime: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Visit.countDocuments(query)
     ]);
-
-    // Enrich with task completion data
-    const enrichedEncounters = await Promise.all(
-      encounters.map(async (encounter) => {
-        const tasks = await VisitTask.findByVisitId(encounter.id);
-        const stats = await VisitTask.getCompletionStats(encounter.id);
-        
-        return {
-          ...encounter,
-          taskCompletions: tasks,
-          completionStats: stats
-        };
-      })
-    );
 
     const totalPages = Math.ceil(total / limit);
 
     res.status(200).json({
-      data: enrichedEncounters,
+      data: visits,
       pagination: {
         total,
         page,
@@ -68,7 +64,7 @@ async function getVisits(req, res) {
 async function getVisitById(req, res) {
   try {
     const { id } = req.params;
-    
+
     const encounter = await Encounter.findById(id);
     if (!encounter) {
       return res.status(404).json({
@@ -90,7 +86,7 @@ async function getVisitById(req, res) {
     // Try to get MongoDB flexible data if exists
     let flexibleData = null;
     try {
-      flexibleData = await Visit.findOne({ 
+      flexibleData = await Visit.findOne({
         $or: [
           { _id: id },
           { offlineId: id }
@@ -128,37 +124,71 @@ async function getVisitById(req, res) {
   }
 }
 
-// Get visits by patient ID
+// Get visits by patient ID (simplified version)
 async function getVisitsByPatient(req, res) {
   try {
+    logger.info('getVisitsByPatient function called');
     const { patientId } = req.params;
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 50;
+    const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
 
-    const encounters = await Encounter.findByPatientId(patientId, limit, offset);
-    
-    // Enrich with task completion data
-    const enrichedEncounters = await Promise.all(
-      encounters.map(async (encounter) => {
-        const stats = await VisitTask.getCompletionStats(encounter.id);
-        return {
-          ...encounter,
-          completionStats: stats
-        };
-      })
+    logger.info(`Fetching visits for patient ${patientId}, page ${page}, limit ${limit}`);
+
+    logger.info('About to execute database query');
+
+    // Get visits directly from database
+    logger.info('Executing query with params:', { patientId, limit, offset });
+    const visits = await executeQuery(
+      `SELECT * FROM visits WHERE patient_id = ? ORDER BY scheduled_time DESC LIMIT ${limit} OFFSET ${offset}`,
+      [patientId]
+    );
+    logger.info('Query executed successfully, found visits:', visits.length);
+
+    // Get total count
+    const countResult = await executeQuery(
+      'SELECT COUNT(*) as total FROM visits WHERE patient_id = ?',
+      [patientId]
     );
 
-    res.status(200).json({ data: enrichedEncounters });
+    const total = countResult[0].total;
+    const totalPages = Math.ceil(total / limit);
+
+    logger.info(`Found ${visits.length} visits for patient ${patientId}`);
+
+    res.status(200).json({
+      data: visits,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1
+      }
+    });
   } catch (error) {
-    logger.error('Error fetching visits by patient:', error);
+    console.log('=== DETAILED ERROR INFO ===');
+    console.log('Error message:', error.message);
+    console.log('Error code:', error.code);
+    console.log('Error errno:', error.errno);
+    console.log('Error sqlState:', error.sqlState);
+    console.log('Error sqlMessage:', error.sqlMessage);
+    console.log('Full error object:', error);
+    console.log('Error stack:', error.stack);
+    console.log('=== END ERROR INFO ===');
+
+    logger.error('Error fetching visits by patient:', error.message);
     res.status(500).json({
       error: {
         code: 'FETCH_PATIENT_VISITS_ERROR',
         message: 'Failed to fetch patient visits',
         details: {
           service: 'visits-service',
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          patientId: req.params.patientId,
+          error: error.message,
+          stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
         }
       }
     });
@@ -174,7 +204,7 @@ async function getVisitsByNurse(req, res) {
     const offset = (page - 1) * limit;
 
     const encounters = await Encounter.findByNurseId(nurseId, limit, offset);
-    
+
     // Enrich with task completion data
     const enrichedEncounters = await Promise.all(
       encounters.map(async (encounter) => {
@@ -210,7 +240,7 @@ async function getVisitsForToday(req, res) {
     const offset = (page - 1) * limit;
 
     const encounters = await Encounter.findTodaysEncounters(limit, offset);
-    
+
     // Enrich with task completion data
     const enrichedEncounters = await Promise.all(
       encounters.map(async (encounter) => {
@@ -242,7 +272,7 @@ async function getVisitsForToday(req, res) {
 async function createVisit(req, res) {
   try {
     const visitData = req.body;
-    
+
     // Validate required fields
     if (!visitData.patient_id || !visitData.scheduled_time) {
       return res.status(400).json({
@@ -404,7 +434,7 @@ async function startVisit(req, res) {
     try {
       await Visit.findOneAndUpdate(
         { _id: encounter.id },
-        { 
+        {
           status: 'inProgress',
           startTime: encounter.start_time
         }
@@ -459,7 +489,7 @@ async function completeVisit(req, res) {
     try {
       await Visit.findOneAndUpdate(
         { _id: encounter.id },
-        { 
+        {
           status: 'completed',
           endTime: encounter.end_time
         }
@@ -502,7 +532,7 @@ async function cancelVisit(req, res) {
           message: `Visit with ID ${id} not found`,
           details: {
             service: 'visits-service',
-          timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString()
           }
         }
       });
@@ -592,7 +622,7 @@ async function deleteVisit(req, res) {
 async function syncVisits(req, res) {
   try {
     const { visits, deviceId } = req.body;
-    
+
     if (!visits || !Array.isArray(visits)) {
       return res.status(400).json({
         error: {
@@ -611,12 +641,12 @@ async function syncVisits(req, res) {
     for (const visitData of visits) {
       try {
         let encounter;
-        
+
         // Check if visit exists by offline ID or regular ID
         if (visitData.offlineId) {
           encounter = await Encounter.findById(visitData.offlineId);
         }
-        
+
         if (!encounter && visitData.id) {
           encounter = await Encounter.findById(visitData.id);
         }
@@ -624,7 +654,7 @@ async function syncVisits(req, res) {
         if (encounter) {
           // Update existing visit
           await encounter.update(visitData);
-          
+
           // Update tasks
           if (visitData.taskCompletions) {
             await VisitTask.updateBulk(encounter.id, visitData.taskCompletions);
@@ -633,7 +663,7 @@ async function syncVisits(req, res) {
           // Create new visit
           encounter = new Encounter(visitData);
           await encounter.save();
-          
+
           // Create tasks
           if (visitData.taskCompletions) {
             await VisitTask.createBulk(encounter.id, visitData.taskCompletions);
@@ -643,7 +673,7 @@ async function syncVisits(req, res) {
         // Update/create MongoDB record for flexible data
         try {
           await Visit.findOneAndUpdate(
-            { 
+            {
               $or: [
                 { _id: encounter.id },
                 { offlineId: visitData.offlineId }
@@ -711,7 +741,7 @@ async function getCompleteVisitData(visitId) {
   const encounter = await Encounter.findById(visitId);
   const tasks = await VisitTask.findByVisitId(visitId);
   const stats = await VisitTask.getCompletionStats(visitId);
-  
+
   let flexibleData = null;
   try {
     flexibleData = await Visit.findOne({ _id: visitId });

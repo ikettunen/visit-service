@@ -5,8 +5,25 @@ const options = {
     openapi: '3.0.0',
     info: {
       title: 'Visits Service API',
-      version: '1.0.0',
-      description: 'API for managing nurse visits and patient documentation in the Nursing Home Dashboard',
+      version: '2.0.0',
+      description: `
+API for managing nurse visits and patient documentation in the Nursing Home Dashboard.
+
+**Architecture (v2.0):**
+- **MongoDB**: Primary storage for all visits (regulated + non-regulated)
+- **MySQL**: Secondary storage for regulated medical visits only (FHIR compliance)
+
+**Visit Classification:**
+- \`isRegulated: true\` → Medical visits requiring licensed staff (stored in both databases)
+- \`isRegulated: false\` → Care activities (stored only in MongoDB)
+
+**Features:**
+- 15 Visit Types (10 regulated, 5 non-regulated)
+- 75 Visit Templates with default tasks
+- 6 Categories: medical, assessment, therapy, emergency, care, social
+- Task management within templates
+- Support for mobile app features (photos, audio, offline sync)
+      `,
       contact: {
         name: 'API Support',
         email: 'support@nursinghome.com'
@@ -39,15 +56,15 @@ const options = {
           type: 'object',
           required: ['patientId', 'patientName', 'nurseId', 'nurseName', 'scheduledTime', 'status'],
           properties: {
-            id: {
+            _id: {
               type: 'string',
-              description: 'Unique visit identifier',
-              example: 'V12345678'
+              description: 'MongoDB document ID',
+              example: '507f1f77bcf86cd799439011'
             },
             patientId: {
               type: 'string',
               description: 'Patient ID',
-              example: 'P12345678'
+              example: 'patient-001'
             },
             patientName: {
               type: 'string',
@@ -56,31 +73,31 @@ const options = {
             },
             nurseId: {
               type: 'string',
-              description: 'Nurse ID',
-              example: 'N12345678'
+              description: 'Nurse/Staff ID',
+              example: 'S0001'
             },
             nurseName: {
               type: 'string',
-              description: 'Nurse name',
+              description: 'Nurse/Staff name',
               example: 'Jane Smith'
             },
             scheduledTime: {
               type: 'string',
               format: 'date-time',
               description: 'Scheduled visit time',
-              example: '2023-12-01T10:00:00Z'
+              example: '2025-11-15T10:00:00Z'
             },
             startTime: {
               type: 'string',
               format: 'date-time',
               description: 'Actual visit start time',
-              example: '2023-12-01T10:05:00Z'
+              example: '2025-11-15T10:05:00Z'
             },
             endTime: {
               type: 'string',
               format: 'date-time',
               description: 'Actual visit end time',
-              example: '2023-12-01T10:30:00Z'
+              example: '2025-11-15T10:30:00Z'
             },
             status: {
               type: 'string',
@@ -91,7 +108,27 @@ const options = {
             location: {
               type: 'string',
               description: 'Visit location',
-              example: 'Room 204A'
+              example: 'Room 101'
+            },
+            visitType: {
+              type: 'string',
+              description: 'Type of visit (references VisitType)',
+              example: 'medical_assessment'
+            },
+            isRegulated: {
+              type: 'boolean',
+              description: 'Whether this is a regulated medical visit (also stored in MySQL)',
+              example: true
+            },
+            requiresLicense: {
+              type: 'boolean',
+              description: 'Whether this visit requires a licensed healthcare worker',
+              example: true
+            },
+            mysqlVisitId: {
+              type: 'string',
+              description: 'Reference to MySQL visits.id if isRegulated=true',
+              example: 'V12345678'
             },
             taskCompletions: {
               type: 'array',
@@ -111,7 +148,7 @@ const options = {
             audioRecordingPath: {
               type: 'string',
               description: 'Path to audio recording file',
-              example: '/uploads/recordings/visit_12345678.aac'
+              example: '/recordings/visit-001.mp3'
             },
             hasAudioRecording: {
               type: 'boolean',
@@ -124,7 +161,23 @@ const options = {
                 type: 'string'
               },
               description: 'List of photo file paths',
-              example: ['/uploads/photos/visit_12345678_1.jpg']
+              example: ['/photos/visit-001-1.jpg']
+            },
+            syncStatus: {
+              type: 'string',
+              enum: ['synced', 'pending', 'failed'],
+              description: 'Synchronization status for mobile app',
+              example: 'synced'
+            },
+            deviceId: {
+              type: 'string',
+              description: 'Device ID that created this visit (for mobile app)',
+              example: 'device-12345'
+            },
+            offlineId: {
+              type: 'string',
+              description: 'Offline ID generated on device',
+              example: 'offline-visit-001'
             },
             createdAt: {
               type: 'string',
@@ -210,6 +263,139 @@ const options = {
             }
           }
         },
+        VisitTemplate: {
+          type: 'object',
+          required: ['title', 'category', 'tags'],
+          properties: {
+            _id: {
+              type: 'string',
+              description: 'Template ID',
+              example: '507f1f77bcf86cd799439011'
+            },
+            title: {
+              type: 'string',
+              description: 'Template name',
+              example: 'Morning Care Routine'
+            },
+            description: {
+              type: 'string',
+              description: 'Template description',
+              example: 'Morning bathing, dressing, and grooming assistance'
+            },
+            category: {
+              type: 'string',
+              enum: ['medical', 'assessment', 'therapy', 'emergency', 'care', 'social'],
+              description: 'Template category',
+              example: 'care'
+            },
+            estimatedDuration: {
+              type: 'integer',
+              description: 'Estimated duration in minutes',
+              example: 45
+            },
+            isRequired: {
+              type: 'boolean',
+              description: 'Whether this requires a licensed healthcare worker',
+              example: false
+            },
+            requiredSkills: {
+              type: 'array',
+              items: {
+                type: 'string'
+              },
+              description: 'Required staff roles',
+              example: ['care_assistant']
+            },
+            tags: {
+              type: 'array',
+              items: {
+                type: 'string'
+              },
+              description: 'Visit type tags',
+              example: ['personal_care_assistance']
+            },
+            usageCount: {
+              type: 'integer',
+              description: 'Number of times this template has been used',
+              example: 42
+            },
+            isActive: {
+              type: 'boolean',
+              description: 'Whether the template is active',
+              example: true
+            },
+            createdAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Creation timestamp'
+            },
+            updatedAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Last update timestamp'
+            }
+          }
+        },
+        VisitTemplateTask: {
+          type: 'object',
+          required: ['taskTitle', 'order'],
+          properties: {
+            _id: {
+              type: 'string',
+              description: 'Task ID',
+              example: '507f1f77bcf86cd799439012'
+            },
+            taskTitle: {
+              type: 'string',
+              description: 'Task title',
+              example: 'Check vital signs'
+            },
+            isRequired: {
+              type: 'boolean',
+              description: 'Whether this task is required',
+              example: true
+            },
+            order: {
+              type: 'integer',
+              description: 'Task order in the template',
+              example: 1
+            }
+          }
+        },
+        VisitType: {
+          type: 'object',
+          properties: {
+            _id: {
+              type: 'string',
+              description: 'Visit type ID'
+            },
+            name: {
+              type: 'string',
+              description: 'Visit type name',
+              example: 'medical_assessment'
+            },
+            displayName: {
+              type: 'string',
+              description: 'Display name',
+              example: 'Medical Assessment'
+            },
+            category: {
+              type: 'string',
+              enum: ['medical', 'assessment', 'therapy', 'emergency', 'care', 'social'],
+              description: 'Visit category'
+            },
+            requiresLicense: {
+              type: 'boolean',
+              description: 'Whether this visit type requires a licensed healthcare worker',
+              example: true
+            },
+            isRegulated: {
+              type: 'boolean',
+              description: 'Whether this is a regulated medical visit (stored in both MongoDB and MySQL)',
+              example: true
+            }
+          }
+        },
         Error: {
           type: 'object',
           properties: {
@@ -233,7 +419,7 @@ const options = {
           properties: {
             total: {
               type: 'integer',
-              description: 'Total number of visits'
+              description: 'Total number of items'
             },
             page: {
               type: 'integer',

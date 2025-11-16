@@ -3,8 +3,8 @@ const { v4: uuidv4 } = require('uuid');
 
 class Encounter {
   constructor(data) {
+    // Core data (stored in MySQL)
     this.id = data.id || uuidv4();
-    this.fhir_id = data.fhir_id || `encounter-${this.id}`;
     this.patient_id = data.patient_id;
     this.patient_name = data.patient_name;
     this.nurse_id = data.nurse_id;
@@ -15,11 +15,56 @@ class Encounter {
     this.status = data.status || 'planned';
     this.location = data.location;
     this.notes = data.notes;
+    this.created_at = data.created_at;
+    this.updated_at = data.updated_at;
+    
+    // Extended data (stored in MongoDB)
+    this.fhir_id = data.fhir_id || `encounter-${this.id}`;
     this.audio_recording_path = data.audio_recording_path;
     this.has_audio_recording = data.has_audio_recording || false;
     this.fhir_resource = data.fhir_resource;
-    this.created_at = data.created_at;
-    this.updated_at = data.updated_at;
+    this.vitalSigns = data.vitalSigns;
+    this.photos = data.photos || [];
+    this.syncStatus = data.syncStatus || 'synced';
+    this.deviceId = data.deviceId;
+    this.offlineId = data.offlineId;
+  }
+
+  // Convert to JSON with camelCase for frontend
+  toJSON() {
+    // Map database status to frontend enum values
+    const statusMap = {
+      'planned': 'planned',
+      'in-progress': 'inProgress',
+      'inProgress': 'inProgress',
+      'finished': 'completed',
+      'completed': 'completed',
+      'cancelled': 'cancelled'
+    };
+
+    return {
+      id: this.id,
+      patientId: this.patient_id,
+      patientName: this.patient_name,
+      nurseId: this.nurse_id,
+      nurseName: this.nurse_name,
+      scheduledTime: this.scheduled_time,
+      startTime: this.start_time,
+      endTime: this.end_time,
+      status: statusMap[this.status] || this.status,
+      location: this.location,
+      notes: this.notes,
+      createdAt: this.created_at,
+      updatedAt: this.updated_at,
+      fhirId: this.fhir_id,
+      audioRecordingPath: this.audio_recording_path,
+      hasAudioRecording: this.has_audio_recording,
+      vitalSigns: this.vitalSigns,
+      photos: this.photos,
+      syncStatus: this.syncStatus,
+      deviceId: this.deviceId,
+      offlineId: this.offlineId
+    };
   }
 
   // Convert to FHIR Encounter resource
@@ -90,16 +135,14 @@ class Encounter {
     return statusMap[status] || 'unknown';
   }
 
-  // Save encounter to database
+  // Save encounter to database (MySQL for core data, MongoDB for extended data)
   async save() {
-    const fhirResource = this.toFHIR();
-    
+    // Save core data to MySQL
     const query = `
       INSERT INTO visits (
-        id, fhir_id, patient_id, patient_name, nurse_id, nurse_name,
-        scheduled_time, start_time, end_time, status, location, notes,
-        audio_recording_path, has_audio_recording, fhir_resource
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, patient_id, patient_name, nurse_id, nurse_name,
+        scheduled_time, start_time, end_time, status, location, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         patient_name = VALUES(patient_name),
         nurse_id = VALUES(nurse_id),
@@ -110,15 +153,11 @@ class Encounter {
         status = VALUES(status),
         location = VALUES(location),
         notes = VALUES(notes),
-        audio_recording_path = VALUES(audio_recording_path),
-        has_audio_recording = VALUES(has_audio_recording),
-        fhir_resource = VALUES(fhir_resource),
         updated_at = CURRENT_TIMESTAMP
     `;
 
     const params = [
       this.id,
-      this.fhir_id,
       this.patient_id,
       this.patient_name,
       this.nurse_id,
@@ -128,26 +167,102 @@ class Encounter {
       this.end_time,
       this.status,
       this.location,
-      this.notes,
-      this.audio_recording_path,
-      this.has_audio_recording,
-      JSON.stringify(fhirResource)
+      this.notes
     ];
 
     await executeQuery(query, params);
+
+    // Save extended data to MongoDB if any exists
+    if (this.hasExtendedData()) {
+      await this.saveExtendedData();
+    }
+
     return this;
   }
 
-  // Find encounter by ID
+  // Check if there's extended data to save
+  hasExtendedData() {
+    return this.fhir_id || this.audio_recording_path || this.has_audio_recording || 
+           this.fhir_resource || this.vitalSigns || this.photos?.length > 0 || 
+           this.syncStatus !== 'synced' || this.deviceId || this.offlineId;
+  }
+
+  // Save extended data to MongoDB
+  async saveExtendedData() {
+    try {
+      const Visit = require('./Visit'); // MongoDB model
+      
+      await Visit.findOneAndUpdate(
+        { _id: this.id },
+        {
+          _id: this.id,
+          // Core visit info (for reference)
+          patientId: this.patient_id,
+          patientName: this.patient_name,
+          nurseId: this.nurse_id,
+          nurseName: this.nurse_name,
+          scheduledTime: this.scheduled_time,
+          status: this.status,
+          location: this.location,
+          
+          // Extended data
+          audioRecordingPath: this.audio_recording_path,
+          hasAudioRecording: this.has_audio_recording,
+          vitalSigns: this.vitalSigns,
+          photos: this.photos,
+          notes: this.notes, // Can be stored in both for flexibility
+          
+          // Sync data
+          syncStatus: this.syncStatus,
+          deviceId: this.deviceId,
+          offlineId: this.offlineId,
+          
+          // FHIR data
+          fhirId: this.fhir_id,
+          fhirResource: this.fhir_resource
+        },
+        { upsert: true, new: true }
+      );
+    } catch (mongoError) {
+      // Log but don't fail the main operation
+      console.warn('Failed to save extended data to MongoDB:', mongoError.message);
+    }
+  }
+
+  // Find encounter by ID (loads from both MySQL and MongoDB)
   static async findById(id) {
-    const query = 'SELECT * FROM visits WHERE id = ? OR fhir_id = ?';
-    const rows = await executeQuery(query, [id, id]);
+    const query = 'SELECT * FROM visits WHERE id = ?';
+    const rows = await executeQuery(query, [id]);
     
     if (rows.length === 0) {
       return null;
     }
 
-    return new Encounter(rows[0]);
+    const coreData = rows[0];
+    
+    // Try to load extended data from MongoDB
+    let extendedData = {};
+    try {
+      const Visit = require('./Visit'); // MongoDB model
+      const mongoDoc = await Visit.findOne({ _id: id });
+      if (mongoDoc) {
+        extendedData = {
+          fhir_id: mongoDoc.fhirId,
+          audio_recording_path: mongoDoc.audioRecordingPath,
+          has_audio_recording: mongoDoc.hasAudioRecording,
+          fhir_resource: mongoDoc.fhirResource,
+          vitalSigns: mongoDoc.vitalSigns,
+          photos: mongoDoc.photos,
+          syncStatus: mongoDoc.syncStatus,
+          deviceId: mongoDoc.deviceId,
+          offlineId: mongoDoc.offlineId
+        };
+      }
+    } catch (mongoError) {
+      console.warn('Failed to load extended data from MongoDB:', mongoError.message);
+    }
+
+    return new Encounter({ ...coreData, ...extendedData });
   }
 
   // Find encounters by patient ID
@@ -156,9 +271,9 @@ class Encounter {
       SELECT * FROM visits 
       WHERE patient_id = ? 
       ORDER BY scheduled_time DESC 
-      LIMIT ? OFFSET ?
+      LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}
     `;
-    const rows = await executeQuery(query, [patientId, limit, offset]);
+    const rows = await executeQuery(query, [patientId]);
     return rows.map(row => new Encounter(row));
   }
 
@@ -168,9 +283,9 @@ class Encounter {
       SELECT * FROM visits 
       WHERE nurse_id = ? 
       ORDER BY scheduled_time DESC 
-      LIMIT ? OFFSET ?
+      LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}
     `;
-    const rows = await executeQuery(query, [nurseId, limit, offset]);
+    const rows = await executeQuery(query, [nurseId]);
     return rows.map(row => new Encounter(row));
   }
 
@@ -180,9 +295,9 @@ class Encounter {
       SELECT * FROM visits 
       WHERE DATE(scheduled_time) = CURDATE() 
       ORDER BY scheduled_time ASC 
-      LIMIT ? OFFSET ?
+      LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}
     `;
-    const rows = await executeQuery(query, [limit, offset]);
+    const rows = await executeQuery(query, []);
     return rows.map(row => new Encounter(row));
   }
 
@@ -216,8 +331,8 @@ class Encounter {
       params.push(filters.date_to);
     }
 
-    query += ' ORDER BY scheduled_time DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
+    // Use string interpolation for LIMIT and OFFSET to avoid MySQL parameter issues
+    query += ` ORDER BY scheduled_time DESC LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}`;
 
     const rows = await executeQuery(query, params);
     return rows.map(row => new Encounter(row));
@@ -257,12 +372,18 @@ class Encounter {
     return rows[0].total;
   }
 
-  // Update encounter
+  // Count encounters by patient ID
+  static async countByPatientId(patientId) {
+    const query = 'SELECT COUNT(*) as total FROM visits WHERE patient_id = ?';
+    const rows = await executeQuery(query, [patientId]);
+    return rows[0].total;
+  }
+
+  // Update encounter (MySQL for core data, MongoDB for extended data)
   async update(updateData) {
     Object.assign(this, updateData);
     
-    const fhirResource = this.toFHIR();
-    
+    // Update core data in MySQL
     const query = `
       UPDATE visits SET
         patient_name = ?,
@@ -274,9 +395,6 @@ class Encounter {
         status = ?,
         location = ?,
         notes = ?,
-        audio_recording_path = ?,
-        has_audio_recording = ?,
-        fhir_resource = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `;
@@ -291,13 +409,16 @@ class Encounter {
       this.status,
       this.location,
       this.notes,
-      this.audio_recording_path,
-      this.has_audio_recording,
-      JSON.stringify(fhirResource),
       this.id
     ];
 
     await executeQuery(query, params);
+
+    // Update extended data in MongoDB if any exists
+    if (this.hasExtendedData()) {
+      await this.saveExtendedData();
+    }
+
     return this;
   }
 

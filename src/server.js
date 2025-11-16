@@ -12,8 +12,13 @@ require('dotenv').config();
 
 // Import routes
 const visitRoutes = require('./routes/visitRoutes');
+const visitTemplateRoutes = require('./routes/visitTemplateRoutes');
 const taskCompletionRoutes = require('./routes/taskCompletionRoutes');
+const taskRoutes = require('./routes/taskRoutes');
+const taskSeedRoutes = require('./routes/taskSeedRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
+const mongoRoutes = require('./routes/mongoRoutes');
+const debugRoutes = require('./routes/debugRoutes');
 
 // Initialize logger
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
@@ -24,7 +29,12 @@ const app = express();
 
 // Middleware
 app.use(helmet()); // Security headers
-app.use(cors()); // Enable CORS
+app.use(cors({
+  origin: true, // Allow all origins for development
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+})); // Enable CORS
 app.use(bodyParser.json({ limit: '50mb' })); // Parse JSON bodies with larger limit for images
 app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 app.use(expressLogger); // Request logging
@@ -66,8 +76,13 @@ app.get('/health', (req, res) => {
 
 // Routes
 app.use('/api/visits', visitRoutes);
+app.use('/api/visit-templates', visitTemplateRoutes);
 app.use('/api/task-completions', taskCompletionRoutes);
+app.use('/api/tasks', taskRoutes);
+app.use('/api/tasks/seed', taskSeedRoutes);
 app.use('/api/uploads', uploadRoutes);
+app.use('/api/mongo', mongoRoutes);
+app.use('/api/debug', debugRoutes);
 
 // Error handler middleware
 app.use((err, req, res, next) => {
