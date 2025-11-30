@@ -27,37 +27,41 @@ describe('Visit Controller Integration Tests', () => {
 
   describe('GET /api/visits', () => {
     it('should return paginated visits with task completion data', async () => {
-      const mockEncounters = [
+      const mockVisits = [
         {
-          id: 'visit-1',
-          patient_id: 'P123',
-          patient_name: 'John Doe',
-          status: 'planned'
+          _id: 'visit-1',
+          patientId: 'P123',
+          patientName: 'John Doe',
+          status: 'planned',
+          nurseId: 'N123',
+          scheduledTime: new Date()
         }
       ];
 
-      const mockTasks = [
-        { id: 1, visit_id: 'visit-1', task_title: 'Check BP', completed: true }
-      ];
-
-      const mockStats = { total_tasks: 1, completed_tasks: 1, completion_percentage: 100 };
-
-      Encounter.findAll.mockResolvedValue(mockEncounters);
-      Encounter.count.mockResolvedValue(1);
-      VisitTask.findByVisitId.mockResolvedValue(mockTasks);
-      VisitTask.getCompletionStats.mockResolvedValue(mockStats);
+      // Mock the MongoDB Visit.find chain
+      Visit.find.mockReturnValue({
+        sort: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue(mockVisits)
+      });
+      Visit.countDocuments.mockResolvedValue(1);
 
       const response = await request(app)
         .get('/api/visits')
         .expect(200);
 
       expect(response.body.data).toHaveLength(1);
-      expect(response.body.data[0].taskCompletions).toEqual(mockTasks);
-      expect(response.body.data[0].completionStats).toEqual(mockStats);
+      expect(response.body.data[0].patientId).toBe('P123');
     });
 
     it('should handle database errors', async () => {
-      Encounter.findAll.mockRejectedValue(new Error('Database error'));
+      Visit.find.mockReturnValue({
+        sort: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockRejectedValue(new Error('Database error'))
+      });
 
       const response = await request(app)
         .get('/api/visits')

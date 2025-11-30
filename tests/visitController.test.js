@@ -25,6 +25,7 @@ app.use(express.json());
 // Add routes manually for testing
 app.get('/api/visits', visitController.getVisits);
 app.get('/api/visits/:id', visitController.getVisitById);
+app.get('/api/visits/nurse/:nurseId/active', visitController.getActiveVisitsByNurse);
 app.post('/api/visits', visitController.createVisit);
 app.put('/api/visits/:id/start', visitController.startVisit);
 app.put('/api/visits/:id/complete', visitController.completeVisit);
@@ -38,37 +39,41 @@ describe('Visit Controller', () => {
 
   describe('GET /api/visits', () => {
     it('should return paginated visits with task completion data', async () => {
-      const mockEncounters = [
+      const mockVisits = [
         {
-          id: 'visit-1',
-          patient_id: 'P123',
-          patient_name: 'John Doe',
-          status: 'planned'
+          _id: 'visit-1',
+          patientId: 'P123',
+          patientName: 'John Doe',
+          status: 'planned',
+          nurseId: 'N123',
+          scheduledTime: new Date()
         }
       ];
 
-      const mockTasks = [
-        { id: 1, visit_id: 'visit-1', task_title: 'Check BP', completed: true }
-      ];
-
-      const mockStats = { total_tasks: 1, completed_tasks: 1, completion_percentage: 100 };
-
-      Encounter.findAll.mockResolvedValue(mockEncounters);
-      Encounter.count.mockResolvedValue(1);
-      VisitTask.findByVisitId.mockResolvedValue(mockTasks);
-      VisitTask.getCompletionStats.mockResolvedValue(mockStats);
+      // Mock the MongoDB Visit.find chain
+      Visit.find.mockReturnValue({
+        sort: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue(mockVisits)
+      });
+      Visit.countDocuments.mockResolvedValue(1);
 
       const response = await request(app)
         .get('/api/visits')
         .expect(200);
 
       expect(response.body.data).toHaveLength(1);
-      expect(response.body.data[0].taskCompletions).toEqual(mockTasks);
-      expect(response.body.data[0].completionStats).toEqual(mockStats);
+      expect(response.body.data[0].patientId).toBe('P123');
     });
 
     it('should handle database errors', async () => {
-      Encounter.findAll.mockRejectedValue(new Error('Database error'));
+      Visit.find.mockReturnValue({
+        sort: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockRejectedValue(new Error('Database error'))
+      });
 
       const response = await request(app)
         .get('/api/visits')
@@ -218,6 +223,110 @@ describe('Visit Controller', () => {
       expect(response.body.message).toBe('Visit deleted successfully');
       expect(mockEncounter.delete).toHaveBeenCalled();
       expect(Visit.findOneAndDelete).toHaveBeenCalledWith({ _id: 'visit-123' });
+    });
+  });
+
+  describe('GET /api/visits/nurse/:nurseId/active', () => {
+    it('should return only active visits for nurse', async () => {
+      const mockVisits = [
+        {
+          _id: 'visit-1',
+          nurseId: 'N12345678',
+          patientId: 'P123',
+          patientName: 'John Doe',
+          status: 'planned',
+          scheduledTime: new Date('2024-01-15T10:00:00Z')
+        },
+        {
+          _id: 'visit-2',
+          nurseId: 'N12345678',
+          patientId: 'P456',
+          patientName: 'Jane Smith',
+          status: 'inProgress',
+          scheduledTime: new Date('2024-01-15T11:00:00Z')
+        }
+      ];
+
+      Visit.find.mockReturnValue({
+        sort: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue(mockVisits)
+      });
+      Visit.countDocuments.mockResolvedValue(2);
+
+      const response = await request(app)
+        .get('/api/visits/nurse/N12345678/active')
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.data).toHaveLength(2);
+      expect(response.body.data[0].status).toBe('planned');
+      expect(response.body.data[1].status).toBe('inProgress');
+      expect(response.body.pagination.total).toBe(2);
+    });
+
+    it('should filter by date range when provided', async () => {
+      Visit.find.mockReturnValue({
+        sort: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([])
+      });
+      Visit.countDocuments.mockResolvedValue(0);
+
+      const response = await request(app)
+        .get('/api/visits/nurse/N12345678/active')
+        .query({
+          date_from: '2024-01-15T00:00:00Z',
+          date_to: '2024-01-15T23:59:59Z'
+        })
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(Visit.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nurseId: 'N12345678',
+          status: { $in: ['planned', 'inProgress'] },
+          scheduledTime: expect.any(Object)
+        })
+      );
+    });
+
+    it('should handle pagination correctly', async () => {
+      Visit.find.mockReturnValue({
+        sort: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([])
+      });
+      Visit.countDocuments.mockResolvedValue(100);
+
+      const response = await request(app)
+        .get('/api/visits/nurse/N12345678/active')
+        .query({ page: 2, limit: 20 })
+        .expect(200);
+
+      expect(response.body.pagination.page).toBe(2);
+      expect(response.body.pagination.limit).toBe(20);
+      expect(response.body.pagination.pages).toBe(5);
+      expect(response.body.pagination.hasNext).toBe(true);
+      expect(response.body.pagination.hasPrev).toBe(true);
+    });
+
+    it('should handle database errors', async () => {
+      Visit.find.mockReturnValue({
+        sort: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockRejectedValue(new Error('MongoDB error'))
+      });
+
+      const response = await request(app)
+        .get('/api/visits/nurse/N12345678/active')
+        .expect(500);
+
+      expect(response.body.error.code).toBe('FETCH_ACTIVE_NURSE_VISITS_ERROR');
     });
   });
 

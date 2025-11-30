@@ -232,6 +232,68 @@ async function getVisitsByNurse(req, res) {
   }
 }
 
+// Get active (non-completed) visits by nurse ID from MongoDB
+async function getActiveVisitsByNurse(req, res) {
+  try {
+    const { nurseId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
+
+    // Query for visits that are NOT completed or cancelled
+    const query = {
+      nurseId: nurseId,
+      status: { $in: ['planned', 'inProgress'] }
+    };
+
+    // Add date filter if provided (useful for getting today's visits)
+    if (req.query.date_from || req.query.date_to) {
+      query.scheduledTime = {};
+      if (req.query.date_from) query.scheduledTime.$gte = new Date(req.query.date_from);
+      if (req.query.date_to) query.scheduledTime.$lte = new Date(req.query.date_to);
+    }
+
+    // Fetch from MongoDB
+    const [visits, total] = await Promise.all([
+      Visit.find(query)
+        .sort({ scheduledTime: 1 }) // Sort by scheduled time ascending (earliest first)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Visit.countDocuments(query)
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+
+    logger.info(`Found ${visits.length} active visits for nurse ${nurseId}`);
+
+    res.status(200).json({
+      success: true,
+      data: visits,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1
+      }
+    });
+  } catch (error) {
+    logger.error('Error fetching active visits by nurse:', error);
+    res.status(500).json({
+      error: {
+        code: 'FETCH_ACTIVE_NURSE_VISITS_ERROR',
+        message: 'Failed to fetch active nurse visits',
+        details: {
+          service: 'visits-service',
+          timestamp: new Date().toISOString()
+        }
+      }
+    });
+  }
+}
+
 // Get today's visits
 async function getVisitsForToday(req, res) {
   try {
@@ -767,6 +829,7 @@ module.exports = {
   getVisitById,
   getVisitsByPatient,
   getVisitsByNurse,
+  getActiveVisitsByNurse,
   getVisitsForToday,
   createVisit,
   updateVisit,

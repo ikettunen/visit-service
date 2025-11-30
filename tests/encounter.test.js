@@ -135,7 +135,6 @@ describe('Encounter Model', () => {
         expect.stringContaining('INSERT INTO visits'),
         expect.arrayContaining([
           encounter.id,
-          encounter.fhir_id,
           'P123',
           'John Doe'
         ])
@@ -154,8 +153,8 @@ describe('Encounter Model', () => {
       const encounter = await Encounter.findById('encounter-123');
 
       expect(executeQuery).toHaveBeenCalledWith(
-        'SELECT * FROM visits WHERE id = ? OR fhir_id = ?',
-        ['encounter-123', 'encounter-123']
+        'SELECT * FROM visits WHERE id = ?',
+        ['encounter-123']
       );
       expect(encounter).toBeInstanceOf(Encounter);
       expect(encounter.id).toBe('encounter-123');
@@ -180,7 +179,7 @@ describe('Encounter Model', () => {
 
       expect(executeQuery).toHaveBeenCalledWith(
         expect.stringContaining('WHERE patient_id = ?'),
-        ['P123', 10, 0]
+        ['P123']
       );
       expect(encounters).toHaveLength(2);
       expect(encounters[0]).toBeInstanceOf(Encounter);
@@ -196,7 +195,7 @@ describe('Encounter Model', () => {
 
       expect(executeQuery).toHaveBeenCalledWith(
         expect.stringContaining('WHERE nurse_id = ?'),
-        ['N456', 10, 0]
+        ['N456']
       );
       expect(encounters).toHaveLength(1);
     });
@@ -211,7 +210,7 @@ describe('Encounter Model', () => {
 
       expect(executeQuery).toHaveBeenCalledWith(
         expect.stringContaining('DATE(scheduled_time) = CURDATE()'),
-        [10, 0]
+        []
       );
       expect(encounters).toHaveLength(1);
     });

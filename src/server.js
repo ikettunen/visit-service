@@ -80,6 +80,7 @@ app.use('/api/visit-templates', visitTemplateRoutes);
 app.use('/api/task-completions', taskCompletionRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/tasks/seed', taskSeedRoutes);
+app.use('/api/care-plans', require('./routes/carePlanRoutes'));
 app.use('/api/uploads', uploadRoutes);
 app.use('/api/mongo', mongoRoutes);
 app.use('/api/debug', debugRoutes);

@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const VisitTemplateSchema = new mongoose.Schema({
-  name: { type: String, required: true, unique: true },
+  name: { type: String, required: true },
   displayName: { type: String, required: true },
   description: { type: String },
   visitType: { type: String, required: true }, // Reference to VisitType
@@ -28,7 +28,7 @@ const VisitTemplateSchema = new mongoose.Schema({
 });
 
 // Indexes
-VisitTemplateSchema.index({ name: 1 });
+VisitTemplateSchema.index({ name: 1 }, { unique: true });
 VisitTemplateSchema.index({ visitType: 1 });
 VisitTemplateSchema.index({ category: 1 });
 VisitTemplateSchema.index({ isActive: 1 });

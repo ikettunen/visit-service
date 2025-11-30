@@ -438,4 +438,35 @@ router.get('/status', async (req, res) => {
   }
 });
 
+/**
+ * @route POST /api/mongo/seed-care-plans
+ * @desc Seed MongoDB with sample care plans
+ * @access Private
+ */
+router.post('/seed-care-plans', async (req, res) => {
+  try {
+    logger.info('Care plans seeding request received');
+    
+    const seedCarePlans = require('../../scripts/seed-care-plans');
+    await seedCarePlans();
+    
+    const CarePlan = require('../models/CarePlan');
+    const count = await CarePlan.countDocuments();
+    
+    res.status(200).json({
+      success: true,
+      message: `Care plans seeding completed. ${count} care plans created.`,
+      data: { total: count },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    logger.error('Care plans seeding failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Care plans seeding failed',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 module.exports = router;

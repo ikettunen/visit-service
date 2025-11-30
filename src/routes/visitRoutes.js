@@ -33,6 +33,15 @@ router.get('/patient/:patientId', visitController.getVisitsByPatient);
 router.get('/nurse/:nurseId', authenticateJWT, visitController.getVisitsByNurse);
 
 /**
+ * @route GET /api/visits/nurse/:nurseId/active
+ * @desc Get active (non-completed) visits for a specific nurse from MongoDB
+ * @access Private
+ * @query date_from - Optional start date filter
+ * @query date_to - Optional end date filter
+ */
+router.get('/nurse/:nurseId/active', visitController.getActiveVisitsByNurse);
+
+/**
  * @route GET /api/visits/today
  * @desc Get visits scheduled for today
  * @access Private

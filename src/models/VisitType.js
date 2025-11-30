@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const VisitTypeSchema = new mongoose.Schema({
-  name: { type: String, required: true, unique: true },
+  name: { type: String, required: true },
   displayName: { type: String, required: true },
   description: { type: String },
   category: { 
@@ -25,7 +25,7 @@ const VisitTypeSchema = new mongoose.Schema({
 });
 
 // Indexes
-VisitTypeSchema.index({ name: 1 });
+VisitTypeSchema.index({ name: 1 }, { unique: true });
 VisitTypeSchema.index({ category: 1 });
 VisitTypeSchema.index({ isActive: 1 });
 VisitTypeSchema.index({ sortOrder: 1 });

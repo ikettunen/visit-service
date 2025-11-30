@@ -5,7 +5,6 @@ const TaskCategorySchema = new mongoose.Schema(
     name: { 
       type: String, 
       required: true,
-      unique: true,
       trim: true,
       maxlength: 100
     },
@@ -74,7 +73,7 @@ const TaskCategorySchema = new mongoose.Schema(
 );
 
 // Indexes
-TaskCategorySchema.index({ name: 1 });
+TaskCategorySchema.index({ name: 1 }, { unique: true });
 TaskCategorySchema.index({ sortOrder: 1, displayName: 1 });
 TaskCategorySchema.index({ isActive: 1 });
 

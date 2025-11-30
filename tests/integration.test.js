@@ -121,7 +121,7 @@ describe('Visits Service Integration Tests', () => {
         const category = response.body.data[0];
         expect(category).toHaveProperty('name');
         expect(category).toHaveProperty('displayName');
-        expect(category).toHaveProperty('category');
+        expect(category).toHaveProperty('icon');
       }
     });
   });
