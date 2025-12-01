@@ -56,6 +56,9 @@ const TaskCompletionSchema = new mongoose.Schema({
 
 const VisitSchema = new mongoose.Schema(
   {
+    // Use string _id to match MySQL UUID (explicitly set as String, not ObjectId)
+    _id: { type: String, required: true },
+    
     // Core visit info
     patientId: { type: String, required: true, index: true },
     patientName: { type: String, required: true },
@@ -103,7 +106,10 @@ const VisitSchema = new mongoose.Schema(
     deviceId: { type: String },
     offlineId: { type: String }, // ID generated on device for offline operations
   },
-  { timestamps: true } // adds createdAt and updatedAt
+  { 
+    _id: false, // Disable automatic ObjectId _id generation
+    timestamps: true // adds createdAt and updatedAt
+  }
 );
 
 // Indexes (removed duplicate indexes that are already defined in schema)

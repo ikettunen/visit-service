@@ -2,6 +2,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const mysql = require('mysql2/promise');
 const CarePlan = require('../src/models/CarePlan');
+const VisitTemplate = require('../src/models/VisitTemplate');
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/nursing_home_visits';
 
@@ -303,11 +304,48 @@ const carePlanTemplates = [
   }
 ];
 
+// Visit type to template name mapping (using actual template names from MongoDB)
+const visitTypeToTemplateName = {
+  'Morning Care': 'morning_personal_care',
+  'Medication Round': 'morning_medication_round',
+  'Physical Therapy': null, // No matching template - will be created without tasks
+  'Meal Assistance': 'breakfast_service', // Could also be lunch_service or dinner_service
+  'Cognitive Therapy': null, // No matching template - will be created without tasks
+  'Blood Sugar Check': 'blood_glucose_test',
+  'Insulin Administration': 'morning_medication_round', // Insulin is part of medication rounds
+  'Foot Care': null // No matching template - will be created without tasks
+};
+
 async function seedCarePlans() {
   let mysqlConnection = null;
   
   try {
-    console.log('Connecting to MySQL...');
+    console.log('Connecting to MongoDB...');
+    await mongoose.connect(MONGODB_URI);
+    console.log('✓ Connected to MongoDB');
+    
+    // Fetch visit templates to get IDs
+    console.log('\nFetching visit templates...');
+    const templates = await VisitTemplate.find({}).lean();
+    console.log(`✓ Found ${templates.length} visit templates`);
+    
+    // Create a map of visit type to template ID
+    const visitTypeToTemplateId = {};
+    for (const [visitType, templateName] of Object.entries(visitTypeToTemplateName)) {
+      if (templateName) {
+        const template = templates.find(t => t && t.name === templateName);
+        if (template) {
+          visitTypeToTemplateId[visitType] = template._id.toString();
+          console.log(`  ✓ Matched "${visitType}" → "${template.displayName}" (${template._id})`);
+        } else {
+          console.log(`  ⚠️  Template "${templateName}" not found for "${visitType}"`);
+        }
+      } else {
+        console.log(`  ℹ️  No template mapping for "${visitType}" - will create visit without tasks`);
+      }
+    }
+    
+    console.log('\nConnecting to MySQL...');
     mysqlConnection = await mysql.createConnection(mysqlConfig);
     console.log('✓ Connected to MySQL');
     
@@ -327,10 +365,17 @@ async function seedCarePlans() {
         const patient = rows[0];
         console.log(`  ✓ Found: ${patient.first_name} ${patient.last_name} (ID: ${patient.id})`);
         
+        // Add visitTemplateId to interventions
+        const interventionsWithTemplateIds = template.template.interventions.map(intervention => ({
+          ...intervention,
+          visitTemplateId: visitTypeToTemplateId[intervention.visitType] || null
+        }));
+        
         carePlans.push({
           patientId: patient.id,
           patientName: `${patient.first_name} ${patient.last_name}`,
-          ...template.template
+          ...template.template,
+          interventions: interventionsWithTemplateIds
         });
       } else {
         console.log(`  ✗ Not found: ${firstName} ${lastName} - skipping`);
@@ -345,10 +390,6 @@ async function seedCarePlans() {
     }
     
     console.log(`\n✓ Found ${carePlans.length} matching patients`);
-    
-    console.log('\nConnecting to MongoDB...');
-    await mongoose.connect(MONGODB_URI);
-    console.log('✓ Connected to MongoDB');
 
     // Clear existing care plans
     console.log('\nClearing existing care plans...');
@@ -404,10 +445,8 @@ async function seedCarePlans() {
       await mysqlConnection.end();
       console.log('MySQL connection closed');
     }
-    if (mongoose.connection.readyState === 1) {
-      await mongoose.connection.close();
-      console.log('MongoDB connection closed');
-    }
+    await mongoose.connection.close();
+    console.log('MongoDB connection closed');
   }
 }
 

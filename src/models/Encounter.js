@@ -25,6 +25,7 @@ class Encounter {
     this.fhir_resource = data.fhir_resource;
     this.vitalSigns = data.vitalSigns;
     this.photos = data.photos || [];
+    this.taskCompletions = data.taskCompletions || [];
     this.syncStatus = data.syncStatus || 'synced';
     this.deviceId = data.deviceId;
     this.offlineId = data.offlineId;
@@ -182,9 +183,8 @@ class Encounter {
 
   // Check if there's extended data to save
   hasExtendedData() {
-    return this.fhir_id || this.audio_recording_path || this.has_audio_recording || 
-           this.fhir_resource || this.vitalSigns || this.photos?.length > 0 || 
-           this.syncStatus !== 'synced' || this.deviceId || this.offlineId;
+    // Always save to MongoDB for staff task visibility
+    return true;
   }
 
   // Save extended data to MongoDB
@@ -192,7 +192,7 @@ class Encounter {
     try {
       const Visit = require('./Visit'); // MongoDB model
       
-      await Visit.findOneAndUpdate(
+      const visitDoc = await Visit.findOneAndUpdate(
         { _id: this.id },
         {
           _id: this.id,
@@ -210,10 +210,11 @@ class Encounter {
           hasAudioRecording: this.has_audio_recording,
           vitalSigns: this.vitalSigns,
           photos: this.photos,
+          taskCompletions: this.taskCompletions || [],
           notes: this.notes, // Can be stored in both for flexibility
           
           // Sync data
-          syncStatus: this.syncStatus,
+          syncStatus: this.syncStatus || 'synced',
           deviceId: this.deviceId,
           offlineId: this.offlineId,
           
@@ -223,9 +224,12 @@ class Encounter {
         },
         { upsert: true, new: true }
       );
+      console.log(`✅ Saved visit ${this.id} to MongoDB with ${this.taskCompletions?.length || 0} tasks`);
+      return visitDoc;
     } catch (mongoError) {
       // Log but don't fail the main operation
-      console.warn('Failed to save extended data to MongoDB:', mongoError.message);
+      console.error('❌ Failed to save extended data to MongoDB:', mongoError.message);
+      console.error('   Error details:', mongoError);
     }
   }
 

@@ -26,6 +26,13 @@ router.get('/:id', authenticateJWT, visitController.getVisitById);
 router.get('/patient/:patientId', visitController.getVisitsByPatient);
 
 /**
+ * @route GET /api/visits/patient/:patientId/with-tasks
+ * @desc Get visits for a specific patient with tasks (MongoDB only)
+ * @access Private (temporarily disabled auth for development)
+ */
+router.get('/patient/:patientId/with-tasks', visitController.getVisitsByPatientWithTasks);
+
+/**
  * @route GET /api/visits/nurse/:nurseId
  * @desc Get visits for a specific nurse
  * @access Private

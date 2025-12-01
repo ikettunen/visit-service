@@ -88,7 +88,11 @@ describe('Visit Controller', () => {
       const visitData = {
         patient_id: 'P123',
         patient_name: 'John Doe',
-        scheduled_time: '2024-01-15T10:00:00Z'
+        nurse_id: 'N123',
+        nurse_name: 'Anna Virtanen',
+        scheduled_time: '2024-01-15T10:00:00Z',
+        status: 'planned',
+        visit_type: 'Medication Round'
       };
 
       const mockEncounter = {

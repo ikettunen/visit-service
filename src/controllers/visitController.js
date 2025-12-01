@@ -124,28 +124,139 @@ async function getVisitById(req, res) {
   }
 }
 
-// Get visits by patient ID (simplified version)
+// Get visits by patient ID with tasks (MongoDB only)
+async function getVisitsByPatientWithTasks(req, res) {
+  try {
+    logger.info('getVisitsByPatientWithTasks function called');
+    const { patientId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
+
+    logger.info(`Fetching visits with tasks for patient ${patientId}, page ${page}, limit ${limit}`);
+
+    // Query MongoDB only (has full data including taskCompletions)
+    const [mongoVisits, total] = await Promise.all([
+      Visit.find({ patientId })
+        .sort({ scheduledTime: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Visit.countDocuments({ patientId })
+    ]);
+
+    logger.info(`Found ${mongoVisits.length} visits in MongoDB for patient ${patientId}`);
+    
+    if (mongoVisits.length > 0) {
+      logger.info(`First visit sample:`, {
+        id: mongoVisits[0]._id,
+        patientId: mongoVisits[0].patientId,
+        patientName: mongoVisits[0].patientName,
+        taskCompletions: mongoVisits[0].taskCompletions?.length || 0,
+        status: mongoVisits[0].status
+      });
+    }
+    
+    const totalPages = Math.ceil(total / limit);
+
+    res.status(200).json({
+      data: mongoVisits,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1
+      }
+    });
+  } catch (error) {
+    logger.error('Error fetching visits with tasks:', error.message);
+    res.status(500).json({
+      error: {
+        code: 'FETCH_PATIENT_VISITS_WITH_TASKS_ERROR',
+        message: 'Failed to fetch patient visits with tasks',
+        details: {
+          service: 'visits-service',
+          timestamp: new Date().toISOString(),
+          patientId: req.params.patientId,
+          error: error.message
+        }
+      }
+    });
+  }
+}
+
+// Get visits by patient ID (enhanced version with MongoDB data)
 async function getVisitsByPatient(req, res) {
   try {
     logger.info('getVisitsByPatient function called');
     const { patientId } = req.params;
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const offset = (page - 1) * limit;
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
 
     logger.info(`Fetching visits for patient ${patientId}, page ${page}, limit ${limit}`);
 
-    logger.info('About to execute database query');
+    // Try MongoDB first (has full data including taskCompletions)
+    try {
+      logger.info(`Searching MongoDB for patient: ${patientId}`);
+      
+      // Debug: Check what patients exist in MongoDB
+      const allPatients = await Visit.distinct('patientId');
+      logger.info(`MongoDB has visits for patients: ${allPatients.join(', ')}`);
+      
+      const [mongoVisits, total] = await Promise.all([
+        Visit.find({ patientId })
+          .sort({ scheduledTime: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean(),
+        Visit.countDocuments({ patientId })
+      ]);
 
-    // Get visits directly from database
-    logger.info('Executing query with params:', { patientId, limit, offset });
+      logger.info(`MongoDB query result: ${mongoVisits.length} visits found for patient ${patientId}`);
+      
+      if (mongoVisits && mongoVisits.length > 0) {
+        logger.info(`Found ${mongoVisits.length} visits in MongoDB for patient ${patientId}`);
+        logger.info(`First visit sample:`, {
+          id: mongoVisits[0]._id,
+          patientId: mongoVisits[0].patientId,
+          patientName: mongoVisits[0].patientName,
+          taskCompletions: mongoVisits[0].taskCompletions?.length || 0
+        });
+        
+        const totalPages = Math.ceil(total / limit);
+
+        return res.status(200).json({
+          data: mongoVisits,
+          pagination: {
+            total,
+            page,
+            limit,
+            pages: totalPages,
+            hasNext: page < totalPages,
+            hasPrev: page > 1
+          }
+        });
+      }
+
+      logger.info('No visits found in MongoDB, falling back to MySQL');
+    } catch (mongoError) {
+      logger.warn('MongoDB query failed, falling back to MySQL:', mongoError.message);
+    }
+
+    // Fallback to MySQL if MongoDB has no data
+    const offset = (page - 1) * limit;
+    
+    logger.info('Executing MySQL query with params:', { patientId, limit, offset });
     const visits = await executeQuery(
       `SELECT * FROM visits WHERE patient_id = ? ORDER BY scheduled_time DESC LIMIT ${limit} OFFSET ${offset}`,
       [patientId]
     );
-    logger.info('Query executed successfully, found visits:', visits.length);
+    logger.info('MySQL query executed successfully, found visits:', visits.length);
 
-    // Get total count
+    // Get total count from MySQL
     const countResult = await executeQuery(
       'SELECT COUNT(*) as total FROM visits WHERE patient_id = ?',
       [patientId]
@@ -154,7 +265,7 @@ async function getVisitsByPatient(req, res) {
     const total = countResult[0].total;
     const totalPages = Math.ceil(total / limit);
 
-    logger.info(`Found ${visits.length} visits for patient ${patientId}`);
+    logger.info(`Found ${visits.length} visits in MySQL for patient ${patientId}`);
 
     res.status(200).json({
       data: visits,
@@ -353,13 +464,18 @@ async function createVisit(req, res) {
     const encounter = new Encounter(visitData);
     await encounter.save();
 
-    // Create tasks if provided
+    // Create tasks if provided (skip if table doesn't exist or no tasks)
     if (visitData.taskCompletions && visitData.taskCompletions.length > 0) {
-      await VisitTask.createBulk(encounter.id, visitData.taskCompletions);
+      try {
+        await VisitTask.createBulk(encounter.id, visitData.taskCompletions);
+      } catch (taskError) {
+        // Log but don't fail if visit_tasks table doesn't exist
+        logger.warn('Failed to create tasks (table may not exist):', taskError.message);
+      }
     }
 
-    // Create MongoDB record for flexible data if needed
-    if (visitData.vitalSigns || visitData.photos || visitData.syncStatus) {
+    // Create MongoDB record for flexible data (always create if we have tasks or other MongoDB fields)
+    if (visitData.taskCompletions || visitData.vitalSigns || visitData.photos || visitData.syncStatus) {
       try {
         const mongoVisit = new Visit({
           _id: encounter.id,
@@ -368,16 +484,29 @@ async function createVisit(req, res) {
           nurseId: encounter.nurse_id,
           nurseName: encounter.nurse_name,
           scheduledTime: encounter.scheduled_time,
+          startTime: encounter.start_time,
+          endTime: encounter.end_time,
           status: encounter.status,
+          location: encounter.location,
+          visitType: visitData.visit_type,
+          visitTemplateId: visitData.visitTemplateId,
+          isRegulated: visitData.isRegulated !== undefined ? visitData.isRegulated : true,
+          requiresLicense: visitData.requiresLicense !== undefined ? visitData.requiresLicense : true,
+          taskCompletions: visitData.taskCompletions || [],
           vitalSigns: visitData.vitalSigns,
+          notes: encounter.notes,
+          hasAudioRecording: visitData.hasAudioRecording || false,
+          audioRecordingPath: visitData.audioRecordingPath,
           photos: visitData.photos || [],
           syncStatus: visitData.syncStatus || 'synced',
           deviceId: visitData.deviceId,
           offlineId: visitData.offlineId
         });
         await mongoVisit.save();
+        logger.info(`Created MongoDB visit record with ${visitData.taskCompletions?.length || 0} tasks`);
       } catch (mongoError) {
         logger.warn('Failed to create MongoDB record:', mongoError.message);
+        logger.warn('MongoDB error details:', mongoError);
       }
     }
 
@@ -390,13 +519,23 @@ async function createVisit(req, res) {
     });
   } catch (error) {
     logger.error('Error creating visit:', error);
+    logger.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      errno: error.errno,
+      sqlMessage: error.sqlMessage,
+      sql: error.sql,
+      stack: error.stack
+    });
     res.status(500).json({
       error: {
         code: 'CREATE_VISIT_ERROR',
         message: 'Failed to create visit',
         details: {
           service: 'visits-service',
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          errorMessage: error.message,
+          sqlMessage: error.sqlMessage
         }
       }
     });
@@ -801,8 +940,16 @@ async function syncVisits(req, res) {
 // Helper function to get complete visit data
 async function getCompleteVisitData(visitId) {
   const encounter = await Encounter.findById(visitId);
-  const tasks = await VisitTask.findByVisitId(visitId);
-  const stats = await VisitTask.getCompletionStats(visitId);
+  
+  // Try to get tasks (may not exist if visit_tasks table doesn't exist)
+  let tasks = [];
+  let stats = null;
+  try {
+    tasks = await VisitTask.findByVisitId(visitId);
+    stats = await VisitTask.getCompletionStats(visitId);
+  } catch (taskError) {
+    logger.warn('Failed to load tasks (table may not exist):', taskError.message);
+  }
 
   let flexibleData = null;
   try {
@@ -828,6 +975,7 @@ module.exports = {
   getVisits,
   getVisitById,
   getVisitsByPatient,
+  getVisitsByPatientWithTasks,
   getVisitsByNurse,
   getActiveVisitsByNurse,
   getVisitsForToday,
