@@ -12,11 +12,21 @@ const router = express.Router();
 router.get('/', visitController.getVisits); // Temporarily disabled auth for development
 
 /**
- * @route GET /api/visits/:id
- * @desc Get a visit by ID
+ * @route GET /api/visits/medications
+ * @desc Get medication administration visits for today or specific date
+ * @access Private
+ * @query date - Date filter (default: 'today')
+ * @query status - Status filter (optional)
+ * @query nurse_id - Nurse filter (optional)
+ */
+router.get('/medications', visitController.getMedicationVisits);
+
+/**
+ * @route GET /api/visits/today
+ * @desc Get visits scheduled for today
  * @access Private
  */
-router.get('/:id', authenticateJWT, visitController.getVisitById);
+router.get('/today', visitController.getVisitsForToday); // Temporarily disabled auth for development
 
 /**
  * @route GET /api/visits/patient/:patientId
@@ -49,11 +59,11 @@ router.get('/nurse/:nurseId', authenticateJWT, visitController.getVisitsByNurse)
 router.get('/nurse/:nurseId/active', visitController.getActiveVisitsByNurse);
 
 /**
- * @route GET /api/visits/today
- * @desc Get visits scheduled for today
+ * @route GET /api/visits/:id
+ * @desc Get a visit by ID
  * @access Private
  */
-router.get('/today', visitController.getVisitsForToday); // Temporarily disabled auth for development
+router.get('/:id', authenticateJWT, visitController.getVisitById);
 
 /**
  * @route POST /api/visits

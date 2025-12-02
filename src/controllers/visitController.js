@@ -18,10 +18,21 @@ async function getVisits(req, res) {
     if (req.query.status) query.status = req.query.status;
     if (req.query.patient_id) query.patientId = req.query.patient_id;
     if (req.query.nurse_id) query.nurseId = req.query.nurse_id;
+    if (req.query.visit_type || req.query.type) {
+      query.visitType = req.query.visit_type || req.query.type;
+    }
     if (req.query.date_from || req.query.date_to) {
       query.scheduledTime = {};
       if (req.query.date_from) query.scheduledTime.$gte = new Date(req.query.date_from);
       if (req.query.date_to) query.scheduledTime.$lte = new Date(req.query.date_to);
+    }
+    
+    // Special handling for date=today
+    if (req.query.date === 'today') {
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+      query.scheduledTime = { $gte: startOfDay, $lt: endOfDay };
     }
 
     // Fetch from MongoDB
@@ -971,6 +982,98 @@ async function getCompleteVisitData(visitId) {
   };
 }
 
+// Get medication visits for today or specific date
+async function getMedicationVisits(req, res) {
+  try {
+    const targetDate = req.query.date || 'today';
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 100;
+    const skip = (page - 1) * limit;
+
+    // Build date query
+    let dateQuery = {};
+    if (targetDate === 'today') {
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+      dateQuery = { $gte: startOfDay, $lt: endOfDay };
+    } else {
+      const date = new Date(targetDate);
+      const startOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+      const endOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
+      dateQuery = { $gte: startOfDay, $lt: endOfDay };
+    }
+
+    // Query for medication visits
+    const query = {
+      visitType: 'medication_administration',
+      scheduledTime: dateQuery
+    };
+
+    // Add additional filters
+    if (req.query.status) query.status = req.query.status;
+    if (req.query.nurse_id) query.nurseId = req.query.nurse_id;
+
+    const [visits, total] = await Promise.all([
+      Visit.find(query)
+        .sort({ scheduledTime: 1 }) // Sort by time ascending for medication rounds
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Visit.countDocuments(query)
+    ]);
+
+    // Group visits by time slots (medication rounds)
+    const rounds = {
+      morning: { time: '08:00', visits: [] },
+      afternoon: { time: '14:00', visits: [] },
+      evening: { time: '20:00', visits: [] }
+    };
+
+    visits.forEach(visit => {
+      const hour = new Date(visit.scheduledTime).getHours();
+      if (hour >= 6 && hour < 12) {
+        rounds.morning.visits.push(visit);
+      } else if (hour >= 12 && hour < 18) {
+        rounds.afternoon.visits.push(visit);
+      } else {
+        rounds.evening.visits.push(visit);
+      }
+    });
+
+    const totalPages = Math.ceil(total / limit);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        date: targetDate === 'today' ? new Date().toISOString().split('T')[0] : targetDate,
+        visits: visits,
+        rounds: rounds,
+        summary: {
+          totalVisits: total,
+          morningVisits: rounds.morning.visits.length,
+          afternoonVisits: rounds.afternoon.visits.length,
+          eveningVisits: rounds.evening.visits.length
+        }
+      },
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: totalPages
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error fetching medication visits:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch medication visits',
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   getVisits,
   getVisitById,
@@ -979,6 +1082,7 @@ module.exports = {
   getVisitsByNurse,
   getActiveVisitsByNurse,
   getVisitsForToday,
+  getMedicationVisits,
   createVisit,
   updateVisit,
   startVisit,
