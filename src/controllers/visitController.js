@@ -456,6 +456,8 @@ async function getVisitsForToday(req, res) {
 async function createVisit(req, res) {
   try {
     const visitData = req.body;
+    
+    logger.info(`🏥 Creating visit: ${visitData.patient_name} - ${visitData.visit_type} - Tasks: ${visitData.taskCompletions?.length || 0}`);
 
     // Validate required fields
     if (!visitData.patient_id || !visitData.scheduled_time) {
@@ -472,23 +474,26 @@ async function createVisit(req, res) {
     }
 
     // Create encounter in MySQL
+    logger.info(`📝 Input taskCompletions: ${JSON.stringify(visitData.taskCompletions?.slice(0,1) || [])}`);
     const encounter = new Encounter(visitData);
+    logger.info(`📝 Encounter taskCompletions: ${encounter.taskCompletions?.length || 0}`);
     await encounter.save();
+    logger.info(`✅ MySQL encounter: ${encounter.id}`);
 
     // Create tasks if provided (skip if table doesn't exist or no tasks)
     if (visitData.taskCompletions && visitData.taskCompletions.length > 0) {
       try {
         await VisitTask.createBulk(encounter.id, visitData.taskCompletions);
+        logger.info(`✅ MySQL tasks: ${visitData.taskCompletions.length}`);
       } catch (taskError) {
-        // Log but don't fail if visit_tasks table doesn't exist
-        logger.warn('Failed to create tasks (table may not exist):', taskError.message);
+        logger.warn(`⚠️ MySQL tasks failed: ${taskError.message}`);
       }
     }
 
-    // Create MongoDB record for flexible data (always create if we have tasks or other MongoDB fields)
+    // Create MongoDB record for flexible data
     if (visitData.taskCompletions || visitData.vitalSigns || visitData.photos || visitData.syncStatus) {
       try {
-        const mongoVisit = new Visit({
+        const mongoVisitData = {
           _id: encounter.id,
           patientId: encounter.patient_id,
           patientName: encounter.patient_name,
@@ -512,12 +517,19 @@ async function createVisit(req, res) {
           syncStatus: visitData.syncStatus || 'synced',
           deviceId: visitData.deviceId,
           offlineId: visitData.offlineId
-        });
+        };
+        
+        logger.info(`📝 MongoDB data: tasks=${mongoVisitData.taskCompletions?.length || 0}`);
+        
+        const mongoVisit = new Visit(mongoVisitData);
         await mongoVisit.save();
-        logger.info(`Created MongoDB visit record with ${visitData.taskCompletions?.length || 0} tasks`);
+        
+        // Verify the saved record
+        const savedVisit = await Visit.findById(encounter.id);
+        logger.info(`✅ MongoDB saved: tasks=${savedVisit?.taskCompletions?.length || 0}`);
+        
       } catch (mongoError) {
-        logger.warn('Failed to create MongoDB record:', mongoError.message);
-        logger.warn('MongoDB error details:', mongoError);
+        logger.error(`❌ MongoDB failed: ${mongoError.message}`);
       }
     }
 
@@ -1074,6 +1086,404 @@ async function getMedicationVisits(req, res) {
   }
 }
 
+// Add note to visit
+async function addNoteToVisit(req, res) {
+  try {
+    const { id } = req.params;
+    const { noteText, staffId, staffName, noteType = 'general' } = req.body;
+
+    // Validate required fields
+    if (!noteText || !staffId) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Missing required fields: noteText, staffId',
+          details: {
+            service: 'visits-service',
+            timestamp: new Date().toISOString()
+          }
+        }
+      });
+    }
+
+    // Find the visit
+    const encounter = await Encounter.findById(id);
+    if (!encounter) {
+      return res.status(404).json({
+        error: {
+          code: 'VISIT_NOT_FOUND',
+          message: `Visit with ID ${id} not found`,
+          details: {
+            service: 'visits-service',
+            timestamp: new Date().toISOString()
+          }
+        }
+      });
+    }
+
+    // Create note entry with timestamp and staff info
+    const timestamp = new Date().toISOString();
+    const noteEntry = `[${timestamp}] ${staffName || staffId} (${noteType}): ${noteText}`;
+    
+    // Append to existing notes or create new
+    const updatedNotes = encounter.notes 
+      ? `${encounter.notes}\n\n${noteEntry}`
+      : noteEntry;
+
+    // Update MySQL encounter
+    await encounter.update({ notes: updatedNotes });
+
+    // Update MongoDB record if exists
+    try {
+      await Visit.findOneAndUpdate(
+        { _id: encounter.id },
+        { 
+          notes: updatedNotes,
+          lastModified: new Date(),
+          lastModifiedBy: {
+            staffId: staffId,
+            staffName: staffName || staffId
+          }
+        }
+      );
+    } catch (mongoError) {
+      logger.warn('Failed to update MongoDB record:', mongoError.message);
+    }
+
+    // Get the complete updated visit data
+    const completeVisit = await getCompleteVisitData(encounter.id);
+
+    res.status(200).json({
+      message: 'Note added to visit successfully',
+      data: {
+        visitId: encounter.id,
+        noteAdded: noteEntry,
+        totalNotes: updatedNotes,
+        visit: completeVisit
+      }
+    });
+  } catch (error) {
+    logger.error('Error adding note to visit:', error);
+    res.status(500).json({
+      error: {
+        code: 'ADD_NOTE_ERROR',
+        message: 'Failed to add note to visit',
+        details: {
+          service: 'visits-service',
+          timestamp: new Date().toISOString()
+        }
+      }
+    });
+  }
+}
+
+// Change visit status with validation
+async function changeVisitStatus(req, res) {
+  try {
+    const { id } = req.params;
+    const { status, staffId, staffName } = req.body;
+
+    // Validate status
+    const validStatuses = ['planned', 'inProgress', 'awaitingDocumentation', 'completed', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_STATUS',
+          message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+          details: {
+            service: 'visits-service',
+            timestamp: new Date().toISOString()
+          }
+        }
+      });
+    }
+
+    const encounter = await Encounter.findById(id);
+    if (!encounter) {
+      return res.status(404).json({
+        error: {
+          code: 'VISIT_NOT_FOUND',
+          message: `Visit with ID ${id} not found`,
+          details: {
+            service: 'visits-service',
+            timestamp: new Date().toISOString()
+          }
+        }
+      });
+    }
+
+    // Check if trying to complete visit - validate all required tasks are completed
+    if (status === 'completed') {
+      try {
+        const mongoVisit = await Visit.findOne({ _id: id });
+        if (mongoVisit && mongoVisit.taskCompletions && mongoVisit.taskCompletions.length > 0) {
+          const requiredTasks = mongoVisit.taskCompletions.filter(task => task.priority === 'high' || task.priority === 'critical');
+          const incompleteRequired = requiredTasks.filter(task => !task.completed);
+          
+          if (incompleteRequired.length > 0) {
+            return res.status(400).json({
+              error: {
+                code: 'INCOMPLETE_REQUIRED_TASKS',
+                message: `Cannot complete visit. ${incompleteRequired.length} required tasks are not completed.`,
+                details: {
+                  service: 'visits-service',
+                  timestamp: new Date().toISOString(),
+                  incompleteTasks: incompleteRequired.map(task => ({
+                    taskId: task.taskId,
+                    taskTitle: task.taskTitle,
+                    priority: task.priority
+                  }))
+                }
+              }
+            });
+          }
+        }
+      } catch (mongoError) {
+        logger.warn('Could not validate tasks from MongoDB:', mongoError.message);
+      }
+    }
+
+    // Update status
+    await encounter.update({ status: status });
+
+    // Update MongoDB record if exists
+    try {
+      const updateData = { status: status };
+      if (status === 'inProgress' && !encounter.start_time) {
+        updateData.startTime = new Date();
+      } else if (status === 'completed' && !encounter.end_time) {
+        updateData.endTime = new Date();
+      }
+
+      await Visit.findOneAndUpdate({ _id: encounter.id }, updateData);
+    } catch (mongoError) {
+      logger.warn('Failed to update MongoDB record:', mongoError.message);
+    }
+
+    // Add status change note
+    if (staffId) {
+      const statusNote = `Status changed to '${status}' by ${staffName || staffId}`;
+      const timestamp = new Date().toISOString();
+      const noteEntry = `[${timestamp}] ${staffName || staffId} (system): ${statusNote}`;
+      
+      const updatedNotes = encounter.notes 
+        ? `${encounter.notes}\n\n${noteEntry}`
+        : noteEntry;
+
+      await encounter.update({ notes: updatedNotes });
+      
+      try {
+        await Visit.findOneAndUpdate({ _id: encounter.id }, { notes: updatedNotes });
+      } catch (mongoError) {
+        logger.warn('Failed to update MongoDB notes:', mongoError.message);
+      }
+    }
+
+    const completeVisit = await getCompleteVisitData(encounter.id);
+
+    res.status(200).json({
+      message: `Visit status changed to '${status}' successfully`,
+      data: completeVisit
+    });
+  } catch (error) {
+    logger.error('Error changing visit status:', error);
+    res.status(500).json({
+      error: {
+        code: 'CHANGE_STATUS_ERROR',
+        message: 'Failed to change visit status',
+        details: {
+          service: 'visits-service',
+          timestamp: new Date().toISOString()
+        }
+      }
+    });
+  }
+}
+
+// Complete a specific task
+async function completeTask(req, res) {
+  try {
+    const { id, taskId } = req.params;
+    const { staffId, staffName, notes = '' } = req.body;
+
+    if (!staffId) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Missing required field: staffId',
+          details: {
+            service: 'visits-service',
+            timestamp: new Date().toISOString()
+          }
+        }
+      });
+    }
+
+    // Find visit in MongoDB (where tasks are stored)
+    const mongoVisit = await Visit.findOne({ _id: id });
+    if (!mongoVisit) {
+      return res.status(404).json({
+        error: {
+          code: 'VISIT_NOT_FOUND',
+          message: `Visit with ID ${id} not found`,
+          details: {
+            service: 'visits-service',
+            timestamp: new Date().toISOString()
+          }
+        }
+      });
+    }
+
+    // Find the task
+    const taskIndex = mongoVisit.taskCompletions.findIndex(task => task.taskId === taskId);
+    if (taskIndex === -1) {
+      return res.status(404).json({
+        error: {
+          code: 'TASK_NOT_FOUND',
+          message: `Task with ID ${taskId} not found in visit`,
+          details: {
+            service: 'visits-service',
+            timestamp: new Date().toISOString()
+          }
+        }
+      });
+    }
+
+    // Update task
+    mongoVisit.taskCompletions[taskIndex].completed = true;
+    mongoVisit.taskCompletions[taskIndex].completedAt = new Date();
+    mongoVisit.taskCompletions[taskIndex].completedBy = {
+      userId: staffId,
+      userName: staffName || staffId
+    };
+    if (notes) {
+      mongoVisit.taskCompletions[taskIndex].notes = notes;
+    }
+
+    await mongoVisit.save();
+
+    // Check if all required tasks are now completed
+    const requiredTasks = mongoVisit.taskCompletions.filter(task => task.priority === 'high' || task.priority === 'critical');
+    const allRequiredCompleted = requiredTasks.every(task => task.completed);
+    
+    let statusMessage = `Task '${mongoVisit.taskCompletions[taskIndex].taskTitle}' marked as completed`;
+    
+    // If all required tasks are completed and visit is inProgress, suggest moving to awaitingDocumentation
+    if (allRequiredCompleted && mongoVisit.status === 'inProgress') {
+      statusMessage += '. All required tasks completed - visit ready for documentation review.';
+    }
+
+    res.status(200).json({
+      message: statusMessage,
+      data: {
+        visitId: id,
+        taskId: taskId,
+        taskTitle: mongoVisit.taskCompletions[taskIndex].taskTitle,
+        completedBy: mongoVisit.taskCompletions[taskIndex].completedBy,
+        completedAt: mongoVisit.taskCompletions[taskIndex].completedAt,
+        allRequiredTasksCompleted: allRequiredCompleted,
+        visit: mongoVisit
+      }
+    });
+  } catch (error) {
+    logger.error('Error completing task:', error);
+    res.status(500).json({
+      error: {
+        code: 'COMPLETE_TASK_ERROR',
+        message: 'Failed to complete task',
+        details: {
+          service: 'visits-service',
+          timestamp: new Date().toISOString()
+        }
+      }
+    });
+  }
+}
+
+// Uncomplete a specific task
+async function uncompleteTask(req, res) {
+  try {
+    const { id, taskId } = req.params;
+    const { staffId, staffName, reason = '' } = req.body;
+
+    if (!staffId) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Missing required field: staffId',
+          details: {
+            service: 'visits-service',
+            timestamp: new Date().toISOString()
+          }
+        }
+      });
+    }
+
+    // Find visit in MongoDB
+    const mongoVisit = await Visit.findOne({ _id: id });
+    if (!mongoVisit) {
+      return res.status(404).json({
+        error: {
+          code: 'VISIT_NOT_FOUND',
+          message: `Visit with ID ${id} not found`,
+          details: {
+            service: 'visits-service',
+            timestamp: new Date().toISOString()
+          }
+        }
+      });
+    }
+
+    // Find the task
+    const taskIndex = mongoVisit.taskCompletions.findIndex(task => task.taskId === taskId);
+    if (taskIndex === -1) {
+      return res.status(404).json({
+        error: {
+          code: 'TASK_NOT_FOUND',
+          message: `Task with ID ${taskId} not found in visit`,
+          details: {
+            service: 'visits-service',
+            timestamp: new Date().toISOString()
+          }
+        }
+      });
+    }
+
+    // Update task
+    mongoVisit.taskCompletions[taskIndex].completed = false;
+    mongoVisit.taskCompletions[taskIndex].completedAt = null;
+    mongoVisit.taskCompletions[taskIndex].completedBy = null;
+    if (reason) {
+      mongoVisit.taskCompletions[taskIndex].notes = `Uncompleted: ${reason}`;
+    }
+
+    await mongoVisit.save();
+
+    res.status(200).json({
+      message: `Task '${mongoVisit.taskCompletions[taskIndex].taskTitle}' marked as not completed`,
+      data: {
+        visitId: id,
+        taskId: taskId,
+        taskTitle: mongoVisit.taskCompletions[taskIndex].taskTitle,
+        reason: reason,
+        visit: mongoVisit
+      }
+    });
+  } catch (error) {
+    logger.error('Error uncompleting task:', error);
+    res.status(500).json({
+      error: {
+        code: 'UNCOMPLETE_TASK_ERROR',
+        message: 'Failed to uncomplete task',
+        details: {
+          service: 'visits-service',
+          timestamp: new Date().toISOString()
+        }
+      }
+    });
+  }
+}
+
 module.exports = {
   getVisits,
   getVisitById,
@@ -1090,4 +1500,8 @@ module.exports = {
   cancelVisit,
   deleteVisit,
   syncVisits,
+  addNoteToVisit,
+  changeVisitStatus,
+  completeTask,
+  uncompleteTask,
 };

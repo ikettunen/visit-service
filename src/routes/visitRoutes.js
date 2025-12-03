@@ -101,6 +101,34 @@ router.put('/:id/complete', authenticateJWT, visitController.completeVisit);
 router.put('/:id/cancel', authenticateJWT, visitController.cancelVisit);
 
 /**
+ * @route POST /api/visits/:id/notes
+ * @desc Add a note to a visit
+ * @access Private
+ */
+router.post('/:id/notes', authenticateJWT, visitController.addNoteToVisit);
+
+/**
+ * @route PUT /api/visits/:id/status
+ * @desc Change visit status with validation
+ * @access Private
+ */
+router.put('/:id/status', authenticateJWT, visitController.changeVisitStatus);
+
+/**
+ * @route PUT /api/visits/:id/tasks/:taskId/complete
+ * @desc Mark a specific task as completed
+ * @access Private
+ */
+router.put('/:id/tasks/:taskId/complete', authenticateJWT, visitController.completeTask);
+
+/**
+ * @route PUT /api/visits/:id/tasks/:taskId/uncomplete
+ * @desc Mark a specific task as not completed
+ * @access Private
+ */
+router.put('/:id/tasks/:taskId/uncomplete', authenticateJWT, visitController.uncompleteTask);
+
+/**
  * @route DELETE /api/visits/:id
  * @desc Delete a visit
  * @access Private

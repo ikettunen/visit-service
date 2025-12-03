@@ -38,6 +38,8 @@ class Encounter {
       'planned': 'planned',
       'in-progress': 'inProgress',
       'inProgress': 'inProgress',
+      'awaiting-documentation': 'awaitingDocumentation',
+      'awaitingDocumentation': 'awaitingDocumentation',
       'finished': 'completed',
       'completed': 'completed',
       'cancelled': 'cancelled'

@@ -70,7 +70,7 @@ const VisitSchema = new mongoose.Schema(
     status: {
       type: String,
       required: true,
-      enum: ['planned', 'inProgress', 'completed', 'cancelled'],
+      enum: ['planned', 'inProgress', 'awaitingDocumentation', 'completed', 'cancelled'],
       default: 'planned',
     },
     location: { type: String },
